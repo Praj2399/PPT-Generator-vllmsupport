@@ -1,0 +1,35 @@
+# Core LangChain packages
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-chroma>=0.2.0
+langchain-ollama>=0.3.0
+langchain-openai>=0.2.0  # For VLLM support
+langchain-core>=0.3.0
+langchain-text-splitters>=0.3.0
+
+# Vector database
+chromadb>=1.0.0
+
+# Document processing
+pypdf>=5.0.0
+python-docx>=1.2.0
+docx2txt>=0.8
+PyMuPDF>=1.26.0
+
+# Core dependencies
+numpy>=2.0.0
+pydantic>=2.11.0
+requests>=2.32.0
+typing_extensions>=4.14.0
+
+# Embeddings and search
+tiktoken>=0.10.0
+rank_bm25>=0.2.2  # For hybrid retrieval (Phase 2)
+
+# API Framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6  # For file uploads
+
+# PPTX Generation
+python-pptx>=0.6.21
