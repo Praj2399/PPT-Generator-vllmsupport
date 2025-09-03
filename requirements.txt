@@ -33,3 +33,9 @@ python-multipart>=0.0.6  # For file uploads
 
 # PPTX Generation
 python-pptx>=0.6.21
+
+#stremlit
+
+streamlit>=1.28.0
+plotly>=5.17.0
+pandas>=2.0.0

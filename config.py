@@ -196,11 +196,14 @@ PATTERNS = {
 # -----------------------------------------------------------------------------
 # Slide Policy (strict 4 bullets)
 # -----------------------------------------------------------------------------
-BULLET_COUNT = 4
+DEFAULT_BULLET_COUNT = 4  # Default number of bullets
+MIN_BULLET_COUNT = 2      # Minimum allowed bullets
+MAX_BULLET_COUNT = 10     # Maximum allowed bullets
 DEFAULT_SLIDE_STRUCTURE = {
     "type": "bullet-points",
-    "min_bullets": BULLET_COUNT,
-    "max_bullets": BULLET_COUNT,
+    "min_bullets": MIN_BULLET_COUNT,
+    "max_bullets": MAX_BULLET_COUNT,
+    "default_bullets": DEFAULT_BULLET_COUNT,
 }
 
 # -----------------------------------------------------------------------------
@@ -276,7 +279,7 @@ Output requirements:
   - "slide": integer from 1 to {num_slides}
   - "type": "bullet-points"
   - "title": concise string
-  - "bullets": array of exactly 4 strings, each between {bullet_min_len} and {bullet_max_len} characters
+  - "bullets": array of exactly {bullet_count} strings, each between {bullet_min_len} and {bullet_max_len} characters
 
 Rules:
 - Each bullet MUST be ≤ {bullet_max_len} characters (counting spaces). Trim to noun phrase if longer.
@@ -306,7 +309,7 @@ Output requirements:
   - "slide": integer from 1 to {num_slides}
   - "type": "bullet-points"
   - "title": concise string
-  - "bullets": array of exactly 4 strings, each between {bullet_min_len} and {bullet_max_len} characters
+  - "bullets": array of exactly {bullet_count} strings, each between {bullet_min_len} and {bullet_max_len} characters
 
 Rules:
 - Each bullet MUST be ≤ {bullet_max_len} characters (counting spaces). Trim to noun phrase if longer.
@@ -337,7 +340,7 @@ Output requirements:
   - "slide": 1
   - "type": "bullet-points"
   - "title": concise string related to {slide_focus}
-  - "bullets": array of exactly 4 strings, each between {bullet_min_len} and {bullet_max_len} characters
+  - "bullets": array of exactly {bullet_count} strings, each between {bullet_min_len} and {bullet_max_len} characters
 
 Rules:
 - Each bullet MUST be ≤ {bullet_max_len} characters (counting spaces). Trim to noun phrase if longer.
@@ -365,7 +368,7 @@ Output requirements:
   - "slide": 1
   - "type": "bullet-points"
   - "title": concise string related to {slide_focus}
-  - "bullets": array of exactly 4 strings, each between {bullet_min_len} and {bullet_max_len} characters
+  - "bullets": array of exactly {bullet_count} strings, each between {bullet_min_len} and {bullet_max_len} characters
 
 Rules:
 - If domain knowledge is necessary, keep claims general and avoid unverifiable specifics.
@@ -393,7 +396,7 @@ def _stats_rule(tone: ToneSpec) -> str:
         return "Prefer concrete numbers, dates, named entities, and citations mentioned in the document; avoid vague claims."
     return "Avoid unnecessary numbers or citations; prioritize clarity."
 
-def render_document_prompt(topic: str, context: str, num_slides: int, tone: ToneSpec) -> str:
+def render_document_prompt(topic: str, context: str, num_slides: int, tone: ToneSpec, bullet_count: int = 4) -> str:
     return DOCUMENT_PROMPT_TEMPLATE.format(
         topic=topic,
         context=context,
@@ -403,11 +406,12 @@ def render_document_prompt(topic: str, context: str, num_slides: int, tone: Tone
         tone_examples=tone.examples,
         bullet_min_len=tone.bullet_min_len,
         bullet_max_len=tone.bullet_max_len,
+        bullet_count=bullet_count,
         context_rule=_context_rule(tone),
         stats_rule=_stats_rule(tone),
     )
 
-def render_fallback_prompt(topic: str, num_slides: int, tone: ToneSpec) -> str:
+def render_fallback_prompt(topic: str, num_slides: int, tone: ToneSpec, bullet_count: int = 4) -> str:
     return FALLBACK_PROMPT_TEMPLATE.format(
         topic=topic,
         num_slides=num_slides,
@@ -416,11 +420,12 @@ def render_fallback_prompt(topic: str, num_slides: int, tone: ToneSpec) -> str:
         tone_examples=tone.examples,
         bullet_min_len=tone.bullet_min_len,
         bullet_max_len=tone.bullet_max_len,
+        bullet_count=bullet_count,
         context_rule=_context_rule(tone),
         stats_rule=_stats_rule(tone),
     )
 
-def render_single_slide_prompt(slide_focus: str, context: str, tone: ToneSpec) -> str:
+def render_single_slide_prompt(slide_focus: str, context: str, tone: ToneSpec, bullet_count: int = 4) -> str:
     return SINGLE_SLIDE_PROMPT_TEMPLATE.format(
         slide_focus=slide_focus,
         context=context,
@@ -429,11 +434,12 @@ def render_single_slide_prompt(slide_focus: str, context: str, tone: ToneSpec) -
         tone_examples=tone.examples,
         bullet_min_len=tone.bullet_min_len,
         bullet_max_len=tone.bullet_max_len,
+        bullet_count=bullet_count,
         context_rule=_context_rule(tone),
         stats_rule=_stats_rule(tone),
     )
 
-def render_single_slide_fallback_prompt(slide_focus: str, tone: ToneSpec) -> str:
+def render_single_slide_fallback_prompt(slide_focus: str, tone: ToneSpec, bullet_count: int = 4) -> str:
     return SINGLE_SLIDE_FALLBACK_TEMPLATE.format(
         slide_focus=slide_focus,
         tone_name=tone.name,
@@ -441,6 +447,7 @@ def render_single_slide_fallback_prompt(slide_focus: str, tone: ToneSpec) -> str
         tone_examples=tone.examples,
         bullet_min_len=tone.bullet_min_len,
         bullet_max_len=tone.bullet_max_len,
+        bullet_count=bullet_count,
         context_rule=_context_rule(tone),
         stats_rule=_stats_rule(tone),
     )

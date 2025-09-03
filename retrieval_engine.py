@@ -2,7 +2,7 @@
 """
 Retrieval and context extraction functionality with hybrid search
 - OCR-aware ingestion via DocumentProcessor (PDFs/DOCX/TXT; OCR on weak pages)
-- Vectorstore caching + optional persistence
+- GLOBAL vectorstore caching across API requests
 - MMR-based dense retriever + BM25 via EnsembleRetriever
 - Retrieval scales with requested slide count (desired_slides)
 - Adaptive sufficiency gate (thresholds scale with ask size)
@@ -25,21 +25,24 @@ from .config import (
     PATTERNS,
 )
 from .document_processor import DocumentProcessor
+from .vectorstore_cache import GLOBAL_VS_CACHE  # NEW IMPORT
 
 
 class RetrievalEngine:
     """Handles vector store operations and context extraction"""
 
-    def __init__(self, persist_directory: Optional[str] = None):
+    def __init__(self, persist_directory: Optional[str] = None, use_global_cache: bool = True):
         """
         Args:
             persist_directory: if provided, Chroma will persist embeddings to this path.
                                If None, vectorstore is ephemeral per process.
+            use_global_cache: Whether to use global cache (default: True)
         """
         self.embeddings = ModelFactory.create_embeddings()
         self.document_processor = DocumentProcessor()
         self.persist_directory = persist_directory
-        self._vs_cache: Dict[str, Tuple[Chroma, List]] = {}  # key -> (vectorstore, splits)
+        self.use_global_cache = use_global_cache
+        # Note: Instance cache removed - using global cache instead
 
     # -----------------------
     # Internal: caching utils
@@ -60,47 +63,79 @@ class RetrievalEngine:
 
     def _get_vectorstore(self, file_paths: List[str]) -> Optional[Tuple[Chroma, List]]:
         """
-        Build (or reuse cached) vectorstore + splits from files using OCR-aware processor.
+        Build (or reuse GLOBAL cached) vectorstore + splits from files.
+        
+        If file_paths is empty: Use existing global cache
+        If file_paths provided: Create new vectorstore and replace global cache
+        
         Returns (vectorstore, splits) or None on failure.
         """
-        if not file_paths:
-            return None
-
-        cache_key = self._fingerprint_files(file_paths)
-        if cache_key in self._vs_cache:
-            return self._vs_cache[cache_key]
-
-        # Load + split via DocumentProcessor (has OCR fallback for weak PDF pages)
-        splits = self.document_processor.load_and_process_files(file_paths)
-        if not splits:
-            return None
-
-        # Create vectorstore (persist if directory provided)
-        try:
-            if self.persist_directory:
-                os.makedirs(self.persist_directory, exist_ok=True)
-                vs = Chroma.from_documents(
-                    documents=splits,
-                    embedding=self.embeddings,
-                    persist_directory=self.persist_directory,
-                )
-                vs.persist()
+        # CASE 1: No files provided - use existing global cache
+        if not file_paths and self.use_global_cache:
+            vs, splits = GLOBAL_VS_CACHE.get()
+            if vs:
+                print("✅ Using existing global vectorstore")
+                return vs, splits
             else:
-                vs = Chroma.from_documents(documents=splits, embedding=self.embeddings)
-        except Exception as e:
-            print(f"[retrieval] Failed to create vectorstore: {e}")
-            return None
+                # No cache available
+                print("❌ No vectorstore in global cache and no files provided")
+                raise ValueError("No vectorstore in cache. Please generate content first.")
+        
+        # CASE 2: Files provided - create new vectorstore and update global cache
+        if file_paths:
+            print(f"🔄 Creating new vectorstore from {len(file_paths)} files")
+            
+            # Load + split via DocumentProcessor (has OCR fallback for weak PDF pages)
+            splits = self.document_processor.load_and_process_files(file_paths)
+            if not splits:
+                print("❌ Document processing failed")
+                return None
 
-        self._vs_cache[cache_key] = (vs, splits)
-        return vs, splits
+            # Create vectorstore (persist if directory provided)
+            try:
+                if self.persist_directory:
+                    os.makedirs(self.persist_directory, exist_ok=True)
+                    vs = Chroma.from_documents(
+                        documents=splits,
+                        embedding=self.embeddings,
+                        persist_directory=self.persist_directory,
+                    )
+                    vs.persist()
+                else:
+                    vs = Chroma.from_documents(documents=splits, embedding=self.embeddings)
+                
+                print(f"✅ Created vectorstore with {len(splits)} chunks")
+                
+            except Exception as e:
+                print(f"[retrieval] Failed to create vectorstore: {e}")
+                return None
+
+            # Store in global cache if enabled
+            if self.use_global_cache:
+                file_hash = self._fingerprint_files(file_paths)
+                GLOBAL_VS_CACHE.set(
+                    vectorstore=vs,
+                    splits=splits,
+                    file_hash=file_hash,
+                    topic=None,  # Will be set by API endpoint
+                    params={}    # Will be set by API endpoint
+                )
+                print("✅ Stored new vectorstore in global cache")
+            
+            return vs, splits
+        
+        # CASE 3: No files and global cache disabled
+        return None
 
     # -----------------------
     # Public: simple semantic retriever (MMR)
     # -----------------------
     def create_retriever(self, file_paths: List[str], desired_slides: Optional[int] = None) -> Optional[Any]:
         """
-        Create a semantic retriever (MMR) from file paths.
+        Create a semantic retriever (MMR) from file paths or cached vectorstore.
         Scales fetch_k with desired_slides for better diversity on big decks.
+        
+        If file_paths is empty, uses cached vectorstore.
         """
         vs_and_splits = self._get_vectorstore(file_paths)
         if not vs_and_splits:
@@ -117,11 +152,14 @@ class RetrievalEngine:
             search_kwargs={"k": RETRIEVAL_K, "fetch_k": fetch_k, "lambda_mult": 0.5},
         )
 
-    def extract_document_context(self, file_paths: List[str], topic: str, desired_slides: Optional[int] = None) -> str:
-        """Extract context from documents for a given topic (semantic MMR; scaled)."""
-        if not file_paths:
-            return ""
-
+    def extract_document_context(self, file_paths: List[str], topic: str, desired_slides: Optional[int] = None, bullet_count: int = 4) -> str:
+        """
+        Extract context from documents for a given topic (semantic MMR; scaled).
+        Also scales retrieval based on bullet_count for quality content.
+        
+        If file_paths is empty, uses cached vectorstore.
+        """
+        # Empty file_paths will use cached vectorstore
         retriever = self.create_retriever(file_paths, desired_slides=desired_slides)
         if not retriever:
             return ""
@@ -133,7 +171,8 @@ class RetrievalEngine:
             except AttributeError:
                 docs = retriever.get_relevant_documents(topic)
             return "\n\n".join(doc.page_content for doc in docs)
-        except Exception:
+        except Exception as e:
+            print(f"❌ Context extraction failed: {e}")
             return ""
 
     # -----------------------
@@ -145,6 +184,8 @@ class RetrievalEngine:
         """
         Create hybrid retriever combining semantic MMR and BM25 keyword search.
         Scales MMR fetch_k with desired_slides.
+        
+        If file_paths is empty, uses cached vectorstore.
         """
         vs_and_splits = self._get_vectorstore(file_paths)
         if not vs_and_splits:
@@ -229,6 +270,7 @@ class RetrievalEngine:
         main_topic: str,
         slide_topic: str,
         desired_slides: Optional[int] = None,
+        bullet_count: int = 4,
     ) -> str:
         """
         Enhanced context extraction with hybrid retrieval and multi-query.
@@ -236,12 +278,13 @@ class RetrievalEngine:
         - Multi-query expansion based on slide intent
         - Dedup by (source, page_number)
         - Scales query budget and context cap by desired_slides
+        - Increases context retrieval for higher bullet counts
+        
+        If file_paths is empty, uses cached vectorstore.
         """
-        if not file_paths:
-            return ""
-
         print(f"🔍 Enhanced retrieval for: {slide_topic}")
-
+        
+        # Empty file_paths will use cached vectorstore
         hybrid_retriever = self.create_hybrid_retriever(file_paths, main_topic, desired_slides=desired_slides)
         if not hybrid_retriever:
             return ""
@@ -278,11 +321,21 @@ class RetrievalEngine:
 
             # Scale context cap (~1 chunk per 2 slides; min 12; max 40)
             cap = 12 if desired_slides is None else min(40, max(12, desired_slides // 2))
+            
+            # Add extra context for more bullets to ensure quality content
+            if bullet_count > 4:
+                # Scale factor: 20% more context for 5-6 bullets, 50% more for 7-8, 80% more for 9-10
+                scale_factor = 1.0 + min(0.8, (bullet_count - 4) * 0.15)
+                original_cap = cap
+                cap = int(cap * scale_factor)
+                cap = min(cap, 50)  # Hard limit to prevent excessive context
+                print(f"📊 Scaled context from {original_cap} to {cap} chunks for {bullet_count} bullets (factor: {scale_factor:.1f}x)")
+            
             return "\n\n".join(all_chunks[:cap])
 
         except Exception as e:
             print(f"⚠️ Enhanced retrieval failed, falling back: {e}")
-            return self.extract_document_context(file_paths, slide_topic, desired_slides=desired_slides)
+            return self.extract_document_context(file_paths, slide_topic, desired_slides=desired_slides, bullet_count=bullet_count)
 
     # -----------------------
     # Misc helpers (optional)

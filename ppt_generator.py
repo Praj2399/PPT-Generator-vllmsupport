@@ -23,6 +23,7 @@ from .config import (
     render_document_prompt, render_fallback_prompt,
     render_single_slide_prompt, render_single_slide_fallback_prompt,
     get_backend_info,  # ADD this line
+    DEFAULT_BULLET_COUNT, MIN_BULLET_COUNT, MAX_BULLET_COUNT,  # Bullet count constants
 )
 from .retrieval_engine import RetrievalEngine
 
@@ -190,23 +191,23 @@ class PPTGenerator:
                 
         return slide_objects
 
-    def create_document_prompt(self, topic: str, context: str, num_slides: int, tone: str = "concise") -> str:
+    def create_document_prompt(self, topic: str, context: str, num_slides: int, tone: str = "concise", bullet_count: int = 4) -> str:
         """Create prompt for document-based generation (tone-aware)"""
         _tone = self._resolve_tone(tone)
-        return render_document_prompt(topic, context, num_slides, _tone)
+        return render_document_prompt(topic, context, num_slides, _tone, bullet_count=bullet_count)
 
-    def create_fallback_prompt(self, topic: str, num_slides: int, tone: str = "concise") -> str:
+    def create_fallback_prompt(self, topic: str, num_slides: int, tone: str = "concise", bullet_count: int = 4) -> str:
         """Create fallback prompt when no document content (tone-aware)"""
         _tone = self._resolve_tone(tone)
-        return render_fallback_prompt(topic, num_slides, _tone)
+        return render_fallback_prompt(topic, num_slides, _tone, bullet_count=bullet_count)
 
-    def create_single_slide_prompt(self, topic: str, context: str, slide_focus: str, tone: str = "concise") -> str:
+    def create_single_slide_prompt(self, topic: str, context: str, slide_focus: str, tone: str = "concise", bullet_count: int = 4) -> str:
         """Create prompt for single slide generation (tone-aware)"""
         _tone = self._resolve_tone(tone)
         if context:
-            return render_single_slide_prompt(slide_focus, context, _tone)
+            return render_single_slide_prompt(slide_focus, context, _tone, bullet_count=bullet_count)
         else:
-            return render_single_slide_fallback_prompt(slide_focus, _tone)
+            return render_single_slide_fallback_prompt(slide_focus, _tone, bullet_count=bullet_count)
 
     def create_single_slide_regeneration_prompt(
         self,
@@ -216,6 +217,7 @@ class PPTGenerator:
         current_slide: Dict = None,
         user_prompt: str = None,
         tone: str = "concise",
+        bullet_count: int = 4,
     ) -> str:
         """
         Enhanced prompt for single slide regeneration with user customization
@@ -236,12 +238,20 @@ Bullet length: {_tone.bullet_min_len}–{_tone.bullet_max_len} characters
         # Add current slide context if provided
         if current_slide:
             bullets_str = "\n".join([f"- {b}" for b in current_slide.get('bullets', [])])
+            old_bullet_count = len(current_slide.get('bullets', []))
+            
             base_prompt += f"""
 
 Current Slide Content:
 Title: {current_slide.get('title', 'N/A')}
-Bullets:
+Bullets ({old_bullet_count} bullets):
 {bullets_str}
+"""
+            
+            if old_bullet_count != bullet_count:
+                base_prompt += f"""
+
+IMPORTANT: The current slide has {old_bullet_count} bullets, but you must generate EXACTLY {bullet_count} bullets for the new version.
 """
 
         # Add user customization request if provided
@@ -251,7 +261,8 @@ Bullets:
 User's Customization Request:
 {user_prompt}
 
-Please incorporate the user's request while maintaining the slide structure.
+REMINDER: Generate EXACTLY {bullet_count} bullets while incorporating the above request.
+Please ensure the user's request is applied while maintaining the specified bullet count.
 """
 
         # Schema-only output requirements (no examples)
@@ -262,7 +273,7 @@ Output requirements:
   - "slide": 1
   - "type": "bullet-points"
   - "title": concise string related to {slide_focus}
-  - "bullets": array of exactly 4 strings, each between {_tone.bullet_min_len} and {_tone.bullet_max_len} characters
+  - "bullets": array of exactly {bullet_count} strings, each between {_tone.bullet_min_len} and {_tone.bullet_max_len} characters
 
 Rules:
 - Use only information from the document content above; do not invent facts.
@@ -276,7 +287,7 @@ Respond with the JSON array only.
 
     def create_all_slides_regeneration_prompt(
         self, topic: str, context: str, num_slides: int,
-        current_slides: List[Dict] = None, user_prompt: str = None, tone: str = "concise"
+        current_slides: List[Dict] = None, user_prompt: str = None, tone: str = "concise", bullet_count: int = 4
     ) -> str:
         """
         Enhanced prompt for all slides regeneration with user customization
@@ -297,13 +308,31 @@ Bullet length: {_tone.bullet_min_len}–{_tone.bullet_max_len} characters
         # Add current presentation context if provided
         if current_slides:
             struct = "\n".join([f"Slide {i+1}: {slide.get('title', 'Untitled')}" for i, slide in enumerate(current_slides)])
-            cnts = "\n".join([f"Slide {i+1}: {len(slide.get('bullets', []))} bullets" for i, slide in enumerate(current_slides)])
+            
+            # Determine the old bullet count from existing slides
+            old_bullet_count = len(current_slides[0].get('bullets', [])) if current_slides and current_slides[0].get('bullets') else 4
+            
+            print(f"🔍 Conflict detection: old_bullet_count={old_bullet_count}, requested_bullet_count={bullet_count}")
+            
+            # Create clear instruction about bullet count change
+            if old_bullet_count != bullet_count:
+                print(f"⚠️ Bullet count conflict detected! Adding conflict resolution instructions")
+                cnts = f"""
+IMPORTANT INSTRUCTION:
+- The previous version had {old_bullet_count} bullets per slide
+- You MUST now generate EXACTLY {bullet_count} bullets per slide
+- This is an intentional change requested by the user
+- Ignore the previous bullet count and follow the new requirement of {bullet_count} bullets"""
+            else:
+                print(f"✅ No bullet count conflict - both are {bullet_count}")
+                cnts = f"Generate exactly {bullet_count} bullets per slide (same as current version)"
+            
             base_prompt += f"""
 
-Current Presentation Structure:
+Current Presentation Structure (slide titles only):
 {struct}
 
-Current Content Summary:
+Bullet Count Requirement:
 {cnts}
 """
 
@@ -314,10 +343,12 @@ Current Content Summary:
 User's Overall Customization Request:
 {user_prompt}
 
-Please incorporate the user's request while maintaining professional presentation structure.
+REMINDER: Generate EXACTLY {bullet_count} bullets per slide while incorporating the above request.
+Please ensure the user's request is applied while maintaining the specified bullet count.
 """
 
         # Schema-only output requirements (no examples)
+        old_bullet_count = len(current_slides[0].get('bullets', [])) if current_slides and current_slides[0].get('bullets') else 4
         base_prompt += f"""
 Output requirements:
 - Return only a JSON array of exactly {num_slides} slide objects.
@@ -325,7 +356,9 @@ Output requirements:
   - "slide": integer from 1 to {num_slides}
   - "type": "bullet-points"
   - "title": concise string
-  - "bullets": array of exactly 4 strings, each between {_tone.bullet_min_len} and {_tone.bullet_max_len} characters
+  - "bullets": array of exactly {bullet_count} strings, each between {_tone.bullet_min_len} and {_tone.bullet_max_len} characters
+
+CRITICAL: Each slide MUST have EXACTLY {bullet_count} bullet points, not {old_bullet_count}.
 
 Rules:
 - Use only information from the document content above; do not invent facts.
@@ -397,8 +430,8 @@ Respond with the JSON array only.
     # ----------------------------
     # Validation
     # ----------------------------
-    def validate_simple(self, slides: List[Dict], tone: str = "concise") -> List[Dict]:
-        """Validate and fix slide structure. Enforce 4-bullet policy and tone-specific length limits."""
+    def validate_simple(self, slides: List[Dict], tone: str = "concise", bullet_count: Optional[int] = None) -> List[Dict]:
+        """Validate and fix slide structure. Enforce dynamic bullet count and tone-specific length limits."""
         fixed_slides = []
         
         # Get tone-specific limits
@@ -415,18 +448,30 @@ Respond with the JSON array only.
             if "title" not in slide:
                 slide["title"] = f"Slide {i}"
             if "bullets" not in slide or not isinstance(slide["bullets"], list):
-                slide["bullets"] = ["TBD"] * DEFAULT_SLIDE_STRUCTURE["min_bullets"]
+                # Use requested bullet count or default
+                target_bullets = bullet_count if bullet_count else DEFAULT_BULLET_COUNT
+                slide["bullets"] = ["TBD"] * target_bullets
 
             bullets = slide["bullets"]
 
-            # Fix bullet count to be within range
-            min_bullets = DEFAULT_SLIDE_STRUCTURE["min_bullets"]
-            max_bullets = DEFAULT_SLIDE_STRUCTURE["max_bullets"]
+            # Determine target bullet count for this slide
+            # Priority: 1) explicit bullet_count param, 2) existing bullet count, 3) default
+            if bullet_count is not None:
+                target_bullets = bullet_count
+            elif len(bullets) > 0 and bullets[0] != "TBD":
+                # Preserve existing non-TBD bullet count
+                target_bullets = len(bullets)
+            else:
+                target_bullets = DEFAULT_BULLET_COUNT
+            
+            # Ensure bullet count is within global limits
+            target_bullets = max(MIN_BULLET_COUNT, min(MAX_BULLET_COUNT, target_bullets))
 
-            while len(bullets) < min_bullets:
+            # Adjust bullet count to match target
+            while len(bullets) < target_bullets:
                 bullets.append("TBD")
-            if len(bullets) > max_bullets:
-                bullets = bullets[:max_bullets]
+            if len(bullets) > target_bullets:
+                bullets = bullets[:target_bullets]
             
             # Remove aggressive truncation - rely on prompt engineering for length control
             # The prompts already specify exact character limits, so validation truncation is unnecessary
@@ -449,6 +494,7 @@ Respond with the JSON array only.
         model_role: str = "primary",
         max_attempts_per_slide: int = 1,
         tone: str = "concise",
+        bullet_count: int = 4,
     ) -> List[Dict[str, Any]]:
         """
         Try to replace 'TBD' padding with AI-generated slides, safely.
@@ -461,14 +507,14 @@ Respond with the JSON array only.
 
         def _needs_refill(slide: Dict[str, Any]) -> bool:
             bullets = slide.get("bullets", [])
-            return any(b.strip().upper() == "TBD" for b in bullets) or len(bullets) < DEFAULT_SLIDE_STRUCTURE["min_bullets"]
+            return any(b.strip().upper() == "TBD" for b in bullets) or len(bullets) < bullet_count
 
         def _make_pad(i: int) -> Dict[str, Any]:
             return {
                 "slide": i,
                 "type": DEFAULT_SLIDE_STRUCTURE["type"],
                 "title": f"Slide {i}",
-                "bullets": ["TBD"] * DEFAULT_SLIDE_STRUCTURE["min_bullets"],
+                "bullets": ["TBD"] * bullet_count,
                 "source": "fallback-pad",
             }
 
@@ -502,7 +548,8 @@ Respond with the JSON array only.
             ctx = ""
             if file_paths:
                 ctx = self.retrieval_engine.enhanced_extract_document_context(
-                    file_paths, topic, focus, desired_slides=1
+                    file_paths, topic, focus, desired_slides=1, 
+                    bullet_count=bullet_count
                 )
 
             # Get tone specifications
@@ -512,6 +559,7 @@ Respond with the JSON array only.
             guard = (
                 "Rules:\n"
                 f"- Each bullet MUST be between {tone_spec.bullet_min_len} and {tone_spec.bullet_max_len} characters.\n"
+                f"- Generate EXACTLY {bullet_count} bullets, not more, not less.\n"
                 "- Do NOT invent statistics, dates, quotes, names, or citations.\n"
                 "- If the document context lacks specifics, write qualitative, general bullets.\n"
                 "- Avoid repeating content already covered: " + covered_hint + "\n"
@@ -521,9 +569,9 @@ Respond with the JSON array only.
 
             # Use proper prompt templates with few-shot examples
             if ctx:
-                prompt = render_single_slide_prompt(focus, ctx, tone_spec)
+                prompt = render_single_slide_prompt(focus, ctx, tone_spec, bullet_count=bullet_count)
             else:
-                prompt = render_single_slide_fallback_prompt(focus, tone_spec)
+                prompt = render_single_slide_fallback_prompt(focus, tone_spec, bullet_count=bullet_count)
 
             # Try a few times to get a clean slide
             attempt = 0
@@ -534,7 +582,7 @@ Respond with the JSON array only.
                     resp = llm.invoke(prompt)
                     parsed = self.parse_slides_simple(resp.content)
                     if parsed["success"]:
-                        candidate = self.validate_simple(parsed["slides"], tone=tone)[0]
+                        candidate = self.validate_simple(parsed["slides"], tone=tone, bullet_count=DEFAULT_SLIDE_STRUCTURE.get("default_bullets", DEFAULT_BULLET_COUNT))[0]
                         candidate["slide"] = s_idx
                         if all(b.strip() and b.strip().upper() != "TBD" for b in candidate.get("bullets", [])):
                             new_slide = candidate
@@ -602,7 +650,8 @@ Respond with the JSON array only.
             context = ""
             if file_paths:
                 context = self.retrieval_engine.enhanced_extract_document_context(
-                    file_paths, topic, slide_title, desired_slides=1
+                    file_paths, topic, slide_title, desired_slides=1,
+                    bullet_count=DEFAULT_SLIDE_STRUCTURE.get("default_bullets", DEFAULT_BULLET_COUNT)
                 )
             
             # Generate single slide
@@ -697,6 +746,7 @@ Respond with the JSON array only.
         model_role: str = "primary",
         tone: str = "concise",
         use_structured_output: bool = True,
+        bullet_count: int = 4,
     ) -> Dict[str, Any]:
         """
         Main generation method for endpoint integration
@@ -710,7 +760,7 @@ Respond with the JSON array only.
         context = ""
         if file_paths:
             context = self.retrieval_engine.enhanced_extract_document_context(
-                file_paths, topic, topic, desired_slides=num_slides
+                file_paths, topic, topic, desired_slides=num_slides, bullet_count=bullet_count
             )
 
         # Adaptive sufficiency
@@ -718,11 +768,14 @@ Respond with the JSON array only.
             context, desired_slides=num_slides
         )
 
+        # Validate bullet count
+        bullet_count = max(MIN_BULLET_COUNT, min(MAX_BULLET_COUNT, bullet_count))
+        
         # Tone-aware prompt
         if use_document_path:
-            prompt = self.create_document_prompt(topic, context, num_slides, tone=tone)
+            prompt = self.create_document_prompt(topic, context, num_slides, tone=tone, bullet_count=bullet_count)
         else:
-            prompt = self.create_fallback_prompt(topic, num_slides, tone=tone)
+            prompt = self.create_fallback_prompt(topic, num_slides, tone=tone, bullet_count=bullet_count)
 
         # Direct manual parsing approach (simplified and faster)
         print(f"🔄 Direct slide generation for topic: {topic}")
@@ -731,7 +784,7 @@ Respond with the JSON array only.
         if direct_result.get("success"):
             slides = direct_result["slides"]
             # Validate and fill missing slides
-            slides = self.validate_simple(slides, tone=tone)
+            slides = self.validate_simple(slides, tone=tone, bullet_count=bullet_count)
             slides = self._ai_fill_missing_slides(
                 slides=slides,
                 topic=topic,
@@ -740,6 +793,7 @@ Respond with the JSON array only.
                 model_role=model_role,
                 max_attempts_per_slide=1,
                 tone=tone,
+                bullet_count=bullet_count,
             )
             
             return {
@@ -754,6 +808,7 @@ Respond with the JSON array only.
                 "model_used": self.models.get(model_role, "unknown"),
                 "model_role": model_role,
                 "tone": tone,
+                "bullet_count": bullet_count,
                 "generation_method": direct_result.get("method", "direct_manual_parsing"),
             }
         else:
@@ -784,7 +839,7 @@ Respond with the JSON array only.
                 tone=tone
             )
 
-        slides = self.validate_simple(parse_result["slides"], tone=tone)
+        slides = self.validate_simple(parse_result["slides"], tone=tone, bullet_count=bullet_count)
         slides = self._ai_fill_missing_slides(
             slides=slides,
             topic=topic,
@@ -793,6 +848,7 @@ Respond with the JSON array only.
             model_role=model_role,
             max_attempts_per_slide=1,
             tone=tone,
+            bullet_count=bullet_count,
         )
 
         return {
@@ -807,6 +863,7 @@ Respond with the JSON array only.
             "model_used": self.models.get(model_role, "unknown"),
             "model_role": model_role,
             "tone": tone,
+            "bullet_count": bullet_count,
             "generation_method": "manual_parsing_fallback",
             "structured_output_status": "failed" if use_structured_output else "not_attempted",
         }
@@ -821,19 +878,30 @@ Respond with the JSON array only.
         current_slide_content: Optional[Dict] = None,
         user_prompt: Optional[str] = None,
         tone: str = "concise",
+        bullet_count: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Regenerate a specific slide with specified model and user customization support"""
+
+        # Determine bullet count
+        if bullet_count is None:
+            if current_slide_content and 'bullets' in current_slide_content:
+                bullet_count = len(current_slide_content['bullets'])
+            else:
+                bullet_count = DEFAULT_BULLET_COUNT
+        
+        # Validate bullet count
+        bullet_count = max(MIN_BULLET_COUNT, min(MAX_BULLET_COUNT, bullet_count))
 
         # Per-slide context (scaled)
         context = ""
         if file_paths:
             context = self.retrieval_engine.enhanced_extract_document_context(
-                file_paths, topic, slide_title, desired_slides=1
+                file_paths, topic, slide_title, desired_slides=1, bullet_count=bullet_count
             )
 
         # Tone-aware prompt
         prompt = self.create_single_slide_regeneration_prompt(
-            topic, context, slide_title, current_slide_content, user_prompt, tone=tone
+            topic, context, slide_title, current_slide_content, user_prompt, tone=tone, bullet_count=bullet_count
         )
 
         llm = self._get_model(model_role)
@@ -862,7 +930,7 @@ Respond with the JSON array only.
                 "model_used": self.models.get(model_role, "unknown")
             }
 
-        regenerated_slide = self.validate_simple(slides, tone=tone)[0]
+        regenerated_slide = self.validate_simple(slides, tone=tone, bullet_count=bullet_count)[0]
         regenerated_slide["slide"] = slide_number
 
         return {
@@ -873,6 +941,7 @@ Respond with the JSON array only.
             "model_used": self.models.get(model_role, "unknown"),
             "model_role": model_role,
             "tone": tone,
+            "bullet_count": bullet_count,
             "user_prompt_applied": user_prompt is not None,
             "had_previous_content": current_slide_content is not None
         }
@@ -886,27 +955,34 @@ Respond with the JSON array only.
         current_slides_content: Optional[List[Dict]] = None,
         user_prompt: Optional[str] = None,
         tone: str = "concise",
+        bullet_count: int = 4,
     ) -> Dict[str, Any]:
         """Regenerate all slides with user customization support"""
+
+        # Validate bullet count
+        bullet_count = max(MIN_BULLET_COUNT, min(MAX_BULLET_COUNT, bullet_count))
 
         # Context scaled to ask
         context = ""
         if file_paths:
             context = self.retrieval_engine.enhanced_extract_document_context(
-                file_paths, topic, topic, desired_slides=num_slides
+                file_paths, topic, topic, desired_slides=num_slides, bullet_count=bullet_count
             )
 
         # Adaptive sufficiency
         use_document_path = self.retrieval_engine.analyze_content_sufficiency(
             context, desired_slides=num_slides
         )
+        
+        print(f"🔍 regenerate_all_slides: use_document_path={use_document_path}, context_length={len(context)}")
 
         if use_document_path:
+            print(f"🔄 Calling create_all_slides_regeneration_prompt with bullet_count={bullet_count}")
             prompt = self.create_all_slides_regeneration_prompt(
-                topic, context, num_slides, current_slides_content, user_prompt, tone=tone
+                topic, context, num_slides, current_slides_content, user_prompt, tone=tone, bullet_count=bullet_count
             )
         else:
-            prompt = self.create_fallback_prompt(topic, num_slides, tone=tone)
+            prompt = self.create_fallback_prompt(topic, num_slides, tone=tone, bullet_count=bullet_count)
 
         llm = self._get_model(model_role)
         try:
@@ -928,7 +1004,7 @@ Respond with the JSON array only.
                 "model_used": self.models.get(model_role, "unknown")
             }
 
-        slides = self.validate_simple(parse_result["slides"])
+        slides = self.validate_simple(parse_result["slides"], tone=tone, bullet_count=bullet_count)
 
         # Enforce exact count with AI-fill
         slides = self._ai_fill_missing_slides(
@@ -939,6 +1015,7 @@ Respond with the JSON array only.
             model_role=model_role,
             max_attempts_per_slide=1,
             tone=tone,
+            bullet_count=bullet_count,
         )
 
         return {
@@ -952,6 +1029,7 @@ Respond with the JSON array only.
             "model_used": self.models.get(model_role, "unknown"),
             "model_role": model_role,
             "tone": tone,
+            "bullet_count": bullet_count,
             "user_prompt_applied": user_prompt is not None,
             "had_previous_content": current_slides_content is not None
         }
